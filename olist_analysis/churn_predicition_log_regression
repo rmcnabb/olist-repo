@@ -1,0 +1,64 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report, roc_auc_score, roc_curve
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Load data
+orders = pd.read_csv(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\orders.csv")
+order_items = pd.read_csv(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\order_items.csv")
+customers = pd.read_csv(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\customers.csv")
+# Merge Orders with Order Items
+
+# Calculate sales fees (10% of price)
+order_items['total_price'] = order_items['price'] * 0.10
+
+# Merge orders with order items to get revenue per order
+orders_revenue = orders.merge(order_items[['order_id', 'total_price']], on='order_id', how='left')
+
+# Aggregate customer data
+customer_data = orders_revenue.groupby('customer_id').agg(
+    total_revenue=('total_price', 'sum'),
+    purchase_count=('order_id', 'nunique'),
+    first_purchase=('order_purchase_timestamp', 'min'),
+    last_purchase=('order_purchase_timestamp', 'max')
+).reset_index()
+
+# Define churn as no purchases in the last 6 months
+current_date = pd.to_datetime('2018-08-30')  # Example current date
+customer_data['last_purchase'] = pd.to_datetime(customer_data['last_purchase'])
+customer_data['recency'] = (current_date - customer_data['last_purchase']).dt.days
+customer_data['churn'] = customer_data['recency'].apply(lambda x: 1 if x > 180 else 0)
+
+# Features and target
+features = customer_data[['purchase_count', 'total_revenue']]
+target = customer_data['churn']
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.3, random_state=42)
+
+# Initialize and train the model
+model = LogisticRegression()
+model.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred = model.predict(X_test)
+y_prob = model.predict_proba(X_test)[:,1]
+
+# Classification Report
+print(classification_report(y_test, y_pred))
+
+# ROC AUC Score
+print(f"ROC AUC Score: {roc_auc_score(y_test, y_prob):.2f}")
+
+# Plot ROC Curve
+fpr, tpr, thresholds = roc_curve(y_test, y_prob)
+plt.figure(figsize=(8,6))
+plt.plot(fpr, tpr, label='Logistic Regression')
+plt.plot([0,1], [0,1], 'k--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve')
+plt.legend()
+plt.show()

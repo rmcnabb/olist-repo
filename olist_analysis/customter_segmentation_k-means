@@ -1,0 +1,64 @@
+import pandas as pd
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Load necessary datasets
+orders = pd.read_csv(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\orders.csv")
+order_items = pd.read_csv(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\order_items.csv")
+customers = pd.read_csv(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\customers.csv")
+
+# Calculate Customer Metrics
+
+# Merge orders with order items to get revenue per order
+order_items['total_price'] = order_items['price'] * 0.10  # Assuming sales fee is 10%
+orders_revenue = orders.merge(order_items[['order_id', 'total_price']], on='order_id', how='left')
+
+# Aggregate customer data
+customer_data = orders_revenue.groupby('customer_id').agg(
+    total_revenue=('total_price', 'sum'),
+    purchase_count=('order_id', 'nunique'),
+    first_purchase=('order_purchase_timestamp', 'min'),
+    last_purchase=('order_purchase_timestamp', 'max')
+).reset_index()
+
+#Calculate Recency, Frequency, and Monetary (RFM) Metrics
+
+# Define current date for recency calculation
+current_date = pd.to_datetime('2018-08-30')  # Example current date
+
+# Calculate recency
+customer_data['last_purchase'] = pd.to_datetime(customer_data['last_purchase'])
+customer_data['recency'] = (current_date - customer_data['last_purchase']).dt.days
+
+# Assign frequency and monetary
+customer_data['frequency'] = customer_data['purchase_count']
+customer_data['monetary'] = customer_data['total_revenue']
+
+# Standardize RFM features
+scaler = StandardScaler()
+rfm_scaled = scaler.fit_transform(customer_data[['recency', 'frequency', 'monetary']])
+
+# Apply K-Means clustering
+kmeans = KMeans(n_clusters=4, random_state=42)
+customer_data['segment'] = kmeans.fit_predict(rfm_scaled)
+
+# Visualize the segments
+plt.figure(figsize=(10,6))
+sns.scatterplot(data=customer_data, x='recency', y='monetary', hue='segment', palette='Set1')
+plt.title('Customer Segmentation based on RFM')
+plt.xlabel('Recency (Days)')
+plt.ylabel('Monetary (BRL)')
+plt.legend(title='Segment')
+plt.show()
+
+# Analyze segments
+segment_analysis = customer_data.groupby('segment').agg(
+    average_recency=('recency', 'mean'),
+    average_frequency=('frequency', 'mean'),
+    average_monetary=('monetary', 'mean'),
+    customer_count=('customer_id', 'count')
+).reset_index()
+
+print(segment_analysis)

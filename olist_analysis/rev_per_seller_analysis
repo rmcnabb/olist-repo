@@ -1,0 +1,34 @@
+import os
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# ================================
+# Define File Paths
+# ================================
+slv_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\post analysis\seller_lifetime_value.csv"
+
+# ================================
+# Check if Files Exist
+# ================================
+for file in [slv_path]:
+    if not os.path.exists(file):
+        raise FileNotFoundError(f"The file {file} was not found. Please check the file path.")
+
+# ================================
+# Load Datasets
+# ================================
+try:
+    slv = pd.read_csv(slv_path)
+    
+except Exception as e:
+    print(f"An error occurred while loading the data: {e}")
+    exit()
+
+
+plt.figure(figsize=(10,6))
+sns.histplot(slv['SLV'], bins=50, kde=True)
+plt.title('Distribution of Seller Lifetime Value (SLV)')
+plt.xlabel('SLV (BRL)')
+plt.ylabel('Number of Sellers')
+plt.show()
