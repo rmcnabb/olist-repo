@@ -1,0 +1,44 @@
+from prophet import Prophet
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Load datasets
+orders = pd.read_csv(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\orders.csv")
+order_items = pd.read_csv(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\order_items.csv")
+
+# Merge orders with order items to get revenue per order
+order_items['total_price'] = order_items['price'] * 0.10  # Assuming sales fee is 10%
+orders_revenue = orders.merge(order_items[['order_id', 'total_price']], on='order_id', how='left')
+
+# Aggregate monthly revenue
+orders_revenue['order_purchase_timestamp'] = pd.to_datetime(orders_revenue['order_purchase_timestamp'])
+monthly_revenue = orders_revenue.groupby(pd.Grouper(key='order_purchase_timestamp', freq='ME')).agg(
+    total_revenue=('total_price', 'sum')
+).reset_index()
+
+# Rename columns for Prophet
+monthly_revenue = monthly_revenue.rename(columns={'order_purchase_timestamp': 'ds', 'total_revenue': 'y'})
+
+# Initialize the Prophet model
+model = Prophet()
+
+# Fit the model on historical data
+model.fit(monthly_revenue)
+
+# Create a dataframe to hold predictions for the next 12 months
+future = model.make_future_dataframe(periods=12, freq='ME')
+
+# Generate the forecast
+forecast = model.predict(future)
+
+# Plot the forecast
+fig = model.plot(forecast)
+plt.title('Monthly Revenue Forecast')
+plt.xlabel('Date')
+plt.ylabel('Total Revenue (BRL)')
+plt.show()
+
+# Plot forecast components (trend, yearly seasonality, weekly seasonality)
+fig2 = model.plot_components(forecast)
+plt.show()

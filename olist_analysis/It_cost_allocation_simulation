@@ -1,0 +1,19 @@
+import math
+import pandas as pd
+
+# Load datasets
+sellers = pd.read_excel(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\sellers.xlsx")
+order_items = pd.read_csv(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\order_items.csv")
+
+#Calculate Total Number of Sellers and Products Sold
+total_sellers = len(sellers['seller_id'].unique())
+total_products_sold = len(order_items['product_id'].unique())
+
+#Define Scaling Coefficients
+# Define Alpha and Beta based on business understanding or given examples
+Alpha = 3157.27  # Example value for sellers
+Beta = 978.23    # Example value for products sold
+
+#Calculate IT Costs
+IT_costs = (math.sqrt(total_sellers) * Alpha) + (math.sqrt(total_products_sold) * Beta)
+print(f"Total IT Costs: {IT_costs} BRL")

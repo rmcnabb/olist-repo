@@ -1,0 +1,1215 @@
+# Import necessary libraries
+import os
+import sys
+import subprocess
+import re
+import logging
+from datetime import datetime
+import json
+
+import pandas as pd
+import numpy as np
+from io import StringIO
+
+# Configure logging to both console and file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s: %(message)s',
+    handlers=[
+        logging.FileHandler("data_cleaning.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+# Define helper functions
+
+def load_data_safe(file_path, raise_error=False):
+    """
+    Loads a CSV file into a pandas DataFrame safely.
+
+    Parameters:
+        file_path (str): The path to the CSV file.
+        raise_error (bool): Whether to raise an error if the file is not found or loading fails.
+
+    Returns:
+        pd.DataFrame: The loaded DataFrame.
+    """
+    if not os.path.exists(file_path):
+        logging.error(f'File not found: {file_path}')
+        if raise_error:
+            raise FileNotFoundError(f'File not found: {file_path}')
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(file_path)
+        logging.info(f'Data loaded from {file_path}')
+        return df
+    except Exception as e:
+        logging.error(f'Error loading {file_path}: {e}')
+        if raise_error:
+            raise e
+        return pd.DataFrame()
+
+def log_dataframe_info(df, df_name):
+    buffer = StringIO()
+    df.info(buf=buffer)
+    info_str = buffer.getvalue()
+    logging.info(f"{df_name} DataFrame Info:\n{info_str}")
+
+# Helper function to install packages
+def install_package(package_name):
+    """
+    Installs a package using pip.
+
+    Parameters:
+        package_name (str): The name of the package to install.
+
+    Returns:
+        bool: True if installation was successful, False otherwise.
+    """
+    try:
+        logging.info(f'Attempting to install package: {package_name}')
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', package_name])
+        logging.info(f'Package {package_name} installed successfully.')
+        return True
+    except subprocess.CalledProcessError as e:
+        logging.error(f'Failed to install package {package_name}. Error: {e}')
+        return False
+
+# Ensure deep_translator is installed and import it
+def ensure_deep_translator():
+    try:
+        from deep_translator import GoogleTranslator
+        logging.info('deep_translator is already installed.')
+    except ImportError:
+        logging.warning('deep_translator not found. Attempting to install...')
+        if install_package('deep_translator'):
+            try:
+                from deep_translator import GoogleTranslator
+                logging.info('deep_translator imported successfully after installation.')
+            except ImportError:
+                logging.error('deep_translator could not be imported even after installation.')
+                sys.exit('deep_translator is required for this script to run. Exiting.')
+        else:
+            sys.exit('Failed to install deep_translator. Please install it manually and retry.')
+
+ensure_deep_translator()
+
+from deep_translator import GoogleTranslator, exceptions
+
+# Define helper functions (including the enhanced handle_missing_values from previous feedback)
+
+def save_clean_data(df, output_path):
+    try:
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            logging.info(f'Created output directory: {output_dir}')
+        df.to_csv(output_path, index=False)
+        logging.info(f'Clean data saved to {output_path}')
+    except Exception as e:
+        logging.error(f'Failed to save data to {output_path}: {e}')
+
+def handle_missing_values(df, columns, dataset_name, strategy='warn', fill_value=None, export_path=None):
+    existing_columns = [col for col in columns if col in df.columns]
+    missing_columns = set(columns) - set(existing_columns)
+    
+    if missing_columns:
+        logging.warning(f"The following columns are missing in {dataset_name}: {missing_columns}")
+    
+    if not existing_columns:
+        logging.warning(f"No valid columns provided for handling missing values in {dataset_name}.")
+        return df
+    
+    missing_rows = df[df[existing_columns].isnull().any(axis=1)]
+    missing_count = missing_rows.shape[0]
+    
+    if missing_count > 0:
+        if strategy == 'warn':
+            logging.warning(f'{missing_count} rows with missing values found in {existing_columns} in {dataset_name} dataset.')
+            if export_path:
+                missing_rows.to_csv(export_path, index=False)
+                logging.info(f'Rows with missing values exported to {export_path}')
+        elif strategy == 'fill':
+            df[existing_columns] = df[existing_columns].fillna(fill_value)
+            logging.info(f'Missing values in {existing_columns} filled with {fill_value} in {dataset_name} dataset.')
+        elif strategy == 'drop':
+            df = df.dropna(subset=existing_columns)
+            logging.info(f'Rows with missing values in {existing_columns} dropped from {dataset_name} dataset.')
+    else:
+        logging.info(f'No missing values found in {existing_columns} in {dataset_name} dataset.')
+    
+    return df
+
+def remove_duplicates(df, subset, dataset_name, export_duplicates=False, export_path=None):
+    duplicate_count = df.duplicated(subset=subset).sum()
+    if duplicate_count > 0:
+        logging.warning(f'{duplicate_count} duplicate records found based on {subset} in {dataset_name}.')
+        if export_duplicates and export_path:
+            duplicates = df[df.duplicated(subset=subset, keep=False)]
+            duplicates.to_csv(export_path, index=False)
+            logging.info(f'Duplicate records exported to {export_path}')
+        df = df.drop_duplicates(subset=subset)
+        logging.info('Duplicate records have been removed.')
+    else:
+        logging.info('No duplicates found.')
+    return df
+
+def validate_foreign_keys(df, reference_df, key, dataset_name, reference_name, strategy='remove', export_invalid=False, export_path=None):
+    if key not in df.columns:
+        logging.error(f"Key column '{key}' not found in the dataset {dataset_name}.")
+        return df
+    if key not in reference_df.columns:
+        logging.error(f"Reference key column '{key}' not found in the reference dataset {reference_name}.")
+        return df
+    missing_keys = set(df[key]) - set(reference_df[key])
+    if missing_keys:
+        logging.warning(f'{len(missing_keys)} {key}(s) in the {dataset_name} dataset not found in {reference_name} dataset.')
+        if strategy == 'remove':
+            if export_invalid and export_path:
+                invalid_records = df[df[key].isin(missing_keys)]
+                invalid_records.to_csv(export_path, index=False)
+                logging.info(f'Records with invalid {key}s exported to {export_path}')
+            df = df[~df[key].isin(missing_keys)]
+            logging.info(f'Records with invalid {key}s have been removed.')
+        elif strategy == 'flag':
+            df[f'{key}_valid'] = ~df[key].isin(missing_keys)
+            logging.info(f'Invalid {key}s have been flagged in {dataset_name} dataset.')
+        elif strategy == 'export_only':
+            if export_invalid and export_path:
+                invalid_records = df[df[key].isin(missing_keys)]
+                invalid_records.to_csv(export_path, index=False)
+                logging.info(f'Records with invalid {key}s exported to {export_path}')
+            # Optionally, you might choose to keep or remove them
+        # Add other strategies as needed
+    else:
+        logging.info(f'All {key}s in {dataset_name} are valid.')
+    return df
+
+def detect_outliers_iqr(df, column, dataset_name, handle='none', export_outliers=False, export_path=None):
+    """
+    Detects outliers using the IQR method and optionally handles them.
+
+    Parameters:
+        df (pd.DataFrame): The DataFrame containing the data.
+        column (str): The column to check for outliers.
+        dataset_name (str): Name of the dataset for logging.
+        handle (str): How to handle outliers. Options: 'none', 'remove', 'cap'.
+        export_outliers (bool): Whether to export the outliers.
+        export_path (str): Path to export outliers if export_outliers is True.
+
+    Returns:
+        pd.DataFrame: The DataFrame after handling outliers.
+    """
+    if column not in df.columns:
+        logging.warning(f'Column {column} not found in {dataset_name} dataset.')
+        return df
+    Q1 = df[column].quantile(0.25)
+    Q3 = df[column].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    outliers = df[(df[column] < lower_bound) | (df[column] > upper_bound)]
+    if not outliers.empty:
+        logging.warning(f'{len(outliers)} outliers detected in {column} in {dataset_name} dataset.')
+        if export_outliers and export_path:
+            outliers.to_csv(export_path, index=False)
+            logging.info(f'Outliers in {column} exported to {export_path}')
+        if handle == 'remove':
+            df = df[(df[column] >= lower_bound) & (df[column] <= upper_bound)]
+            logging.info(f'Outliers in {column} have been removed.')
+        elif handle == 'cap':
+            df[column] = np.where(df[column] < lower_bound, lower_bound,
+                                  np.where(df[column] > upper_bound, upper_bound, df[column]))
+            logging.info(f'Outliers in {column} have been capped.')
+    else:
+        logging.info(f'No outliers detected in {column} in {dataset_name} dataset.')
+    return df
+
+def standardize_dates(df, columns, dataset_name, strategy='drop', export_invalid=False, export_path=None, fill_value=None):
+    """
+    Standardizes date columns in the DataFrame.
+
+    Parameters:
+        df (pd.DataFrame): The DataFrame containing the data.
+        columns (list): List of date column names to standardize.
+        dataset_name (str): Name of the dataset for logging.
+        strategy (str): How to handle invalid dates. Options: 'drop', 'flag', 'impute'.
+        export_invalid (bool): Whether to export invalid date records.
+        export_path (str): Path to export invalid date records if export_invalid is True.
+        fill_value (datetime-like): The value to impute for invalid dates when strategy is 'impute'.
+
+    Returns:
+        pd.DataFrame: The DataFrame with standardized date columns.
+    """
+    for col in columns:
+        if col in df.columns:
+            # Convert to datetime, coerce errors to NaT
+            df.loc[:, col] = pd.to_datetime(df[col], errors='coerce')
+            invalid_dates = df[col].isnull()
+            invalid_count = invalid_dates.sum()
+            if invalid_count > 0:
+                logging.warning(f'Invalid dates found in {col} in {dataset_name} dataset.')
+                if export_invalid and export_path:
+                    invalid_records = df[invalid_dates]
+                    invalid_records.to_csv(export_path, index=False)
+                    logging.info(f'Records with invalid {col} exported to {export_path}')
+                if strategy == 'drop':
+                    df = df.dropna(subset=[col])
+                    logging.info(f'Records with invalid {col} have been dropped from {dataset_name} dataset.')
+                elif strategy == 'flag':
+                    df.loc[:, f'{col}_valid'] = ~invalid_dates
+                    logging.info(f'Invalid dates in {col} have been flagged in {dataset_name} dataset.')
+                elif strategy == 'impute':
+                    if fill_value is not None:
+                        df[col].fillna(fill_value, inplace=True)
+                        logging.info(f'Invalid dates in {col} have been imputed with {fill_value} in {dataset_name} dataset.')
+                    else:
+                        logging.error(f"'fill_value' must be provided when strategy is 'impute' for {col}.")
+                else:
+                    logging.error(f'Unknown strategy: {strategy}. No action taken for {col}.')
+        else:
+            logging.warning(f'Column {col} not found in {dataset_name} dataset.')
+    return df
+
+def standardize_text(df, columns):
+    """
+    Standardizes text in specified columns by converting to lowercase and stripping whitespace.
+
+    Parameters:
+        df (pd.DataFrame): The DataFrame containing the data.
+        columns (list): List of column names to standardize.
+
+    Returns:
+        pd.DataFrame: The DataFrame with standardized text columns.
+    """
+    for col in columns:
+        if col in df.columns:
+            if df[col].dtype == object:
+                df.loc[:, col] = df[col].astype(str).str.strip().str.lower()
+                logging.info(f"Column '{col}' has been standardized to lowercase and stripped of whitespace.")
+            else:
+                logging.warning(f"Column '{col}' is not of object type and cannot be standardized as text.")
+        else:
+            logging.warning(f"Column '{col}' not found in the DataFrame.")
+    return df
+
+
+"""def translate_unique_texts(df, column, translation_cache, export_cache_path='translation_cache.json'):
+    
+    Translates unique texts in a specified column using GoogleTranslator and updates the translation cache.
+
+    Parameters:
+        df (pd.DataFrame): The DataFrame containing the data.
+        column (str): The column containing text to translate.
+        translation_cache (dict): A dictionary to cache translations.
+        export_cache_path (str): Path to save the translation cache.
+
+    Returns:
+        pd.DataFrame: The DataFrame with new translated columns added.
+
+    unique_texts = df[column].dropna().unique()
+    unique_texts = [text for text in unique_texts if text not in translation_cache]
+    
+    logging.info(f'Number of unique texts to translate in {column}: {len(unique_texts)}')
+    
+    for text in unique_texts:
+        try:
+            translated = GoogleTranslator(source='auto', target='en').translate(text)
+            translation_cache[text] = translated
+            logging.info(f'Translated: "{text}" -> "{translated}"')
+            # To prevent hitting rate limits
+            time.sleep(0.1)
+        except exceptions.NotValidPayload as e:
+            logging.error(f'Invalid payload for text: "{text}". Error: {e}')
+            translation_cache[text] = text
+        except exceptions.ServerException as e:
+            logging.error(f'Server error during translation: {e}. Returning original text.')
+            translation_cache[text] = text
+        except Exception as e:
+            logging.error(f'Error translating text: {e}. Returning original text.')
+            translation_cache[text] = text
+    
+    # Save the updated translation cache
+    with open(export_cache_path, 'w', encoding='utf-8') as f:
+        json.dump(translation_cache, f, ensure_ascii=False, indent=4)
+        logging.info(f'Translation cache saved to {export_cache_path}.')
+    
+    # Create new translated columns
+    df[f'{column}_en'] = df[column].map(translation_cache).fillna(df[column])
+    
+    return df"""
+
+# Usage
+
+# Load all datasets
+customers = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\olist_customers_dataset.csv", raise_error=True)
+
+orders = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\olist_orders_dataset.csv", raise_error=True)
+
+payments = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\olist_order_payments_dataset.csv", raise_error=True)
+
+order_reviews = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\olist_order_reviews_dataset.csv", raise_error=True)
+
+products = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\olist_products_dataset.csv", raise_error=True)
+
+order_items = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\olist_order_items_dataset.csv", raise_error=True)
+
+sellers = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\olist_sellers_dataset.csv", raise_error=True)
+
+closed_deals = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\olist_closed_deals_dataset.csv", raise_error=True)
+
+mqls = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\olist_marketing_qualified_leads_dataset.csv", raise_error=True)
+
+category_translation = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\product_category_name_translation.csv", raise_error=True)
+
+geolocation = load_data_safe(r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\olist_geolocation_dataset.csv", raise_error=True)
+
+### Customers Dataset
+
+# Inspect the Data
+logging.info("Customers DataFrame Head:\n" + customers.head().to_string())
+log_dataframe_info(customers, 'Customers')
+logging.info(f"Customers DataFrame Description:\n{customers.describe().to_string()}")
+
+# Check for duplicates in customer_id
+customers = remove_duplicates(customers, ['customer_id'], 'Customers', export_duplicates=False)
+
+# Check for duplicate (customer_id, customer_unique_id) pairs
+duplicate_pairs = customers.duplicated(subset=['customer_id', 'customer_unique_id'], keep=False)
+
+if duplicate_pairs.any():
+    logging.warning('Duplicate (customer_id, customer_unique_id) pairs found.')
+    # View duplicates
+    logging.info(f"Duplicate Records:\n{customers[duplicate_pairs].to_string()}")
+    # Remove duplicates but keep all unique (customer_id, customer_unique_id) combinations
+    customers = customers.drop_duplicates(subset=['customer_id', 'customer_unique_id'])
+    logging.info('Duplicate pairs removed.')
+else:
+    logging.info('No duplicate (customer_id, customer_unique_id) pairs found.')
+
+# Handle Missing Values and Export Missing Rows
+customers = handle_missing_values(
+    customers,
+    ['customer_id', 'customer_unique_id', 'customer_zip_code_prefix', 'customer_city', 'customer_state'],
+    'Customers',
+    strategy='warn',
+    export_path='missing_Customers.csv'
+)
+
+# Standardize ZIP Codes, City, and State Names
+# Ensure ZIP codes are strings and have correct length
+customers['customer_zip_code_prefix'] = customers['customer_zip_code_prefix'].astype(str).str.zfill(5)
+logging.info('ZIP codes have been standardized.')
+
+# Standardize city and state names to lowercase
+customers = standardize_text(customers, ['customer_city', 'customer_state'])
+
+# Validate Geographical Consistency
+
+# Remove duplicates in geolocation dataset and export duplicates
+geolocation = remove_duplicates(
+    geolocation,
+    ['geolocation_zip_code_prefix', 'geolocation_lat', 'geolocation_lng', 'geolocation_city', 'geolocation_state'],
+    'Geolocation',
+    export_duplicates=True,
+    export_path='duplicate_geolocation.csv'
+)
+
+# Correct Column Name Typos in Geolocation if any (assuming no typos)
+
+# Aggregate geolocation data by ZIP code prefix
+geolocation_grouped = geolocation.groupby('geolocation_zip_code_prefix').agg({
+    'geolocation_lat': 'mean',
+    'geolocation_lng': 'mean',
+    'geolocation_city': lambda x: x.mode()[0].lower() if not x.mode().empty else np.nan,
+    'geolocation_state': lambda x: x.mode()[0].lower() if not x.mode().empty else np.nan
+}).reset_index()
+
+# Convert 'geolocation_zip_code_prefix' to string with leading zeros
+geolocation_grouped['geolocation_zip_code_prefix'] = geolocation_grouped['geolocation_zip_code_prefix'].astype(str).str.zfill(5)
+
+# Verify data types
+logging.info(f"Data type of 'customer_zip_code_prefix': {customers['customer_zip_code_prefix'].dtype}")
+logging.info(f"Data type of 'geolocation_zip_code_prefix': {geolocation_grouped['geolocation_zip_code_prefix'].dtype}")
+
+# Merge customers with geolocation data
+try:
+    customers = customers.merge(
+        geolocation_grouped,
+        left_on='customer_zip_code_prefix',
+        right_on='geolocation_zip_code_prefix',
+        how='left'
+    )
+    logging.info('Customers merged with geolocation data successfully.')
+except Exception as e:
+    logging.error(f'Failed to merge customers with geolocation data: {e}')
+    sys.exit(1)
+
+# Log missing geolocation data
+missing_geo_customers = customers[customers['geolocation_lat'].isnull()]
+if not missing_geo_customers.empty:
+    logging.warning(f'{len(missing_geo_customers)} customers missing geolocation data.')
+    # Export missing geolocation customers
+    save_clean_data(missing_geo_customers, 'missing_geo_customers.csv')
+
+# Compare city and state with geolocation data
+customers['city_match'] = customers['customer_city'] == customers['geolocation_city']
+customers['state_match'] = customers['customer_state'] == customers['geolocation_state']
+
+# Log mismatches
+city_mismatches = customers[~customers['city_match']]
+state_mismatches = customers[~customers['state_match']]
+
+if not city_mismatches.empty:
+    logging.warning(f'{len(city_mismatches)} customers with city mismatch.')
+    # Export city mismatches
+    save_clean_data(city_mismatches, 'city_mismatches_customers.csv')
+
+if not state_mismatches.empty:
+    logging.warning(f'{len(state_mismatches)} customers with state mismatch.')
+    # Export state mismatches
+    save_clean_data(state_mismatches, 'state_mismatches_customers.csv')
+
+# Ensure 'customer_id' is of type string in both DataFrames
+customers['customer_id'] = customers['customer_id'].astype(str)
+orders['customer_id'] = orders['customer_id'].astype(str)
+
+# Validate customer_ids against Orders Dataset and export invalid records
+customers = validate_foreign_keys(
+    df=customers,
+    reference_df=orders,
+    key='customer_id',
+    dataset_name='Customers',
+    reference_name='Orders',
+    strategy='remove',
+    export_invalid=True,
+    export_path='invalid_customer_ids_Customers.csv'
+)
+
+# Save cleaned data
+save_clean_data(customers, r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\cleaned\clean_customers.csv")
+
+### Payments Dataset
+
+# Inspect the Data
+logging.info("Payments DataFrame Head:\n" + payments.head().to_string())
+log_dataframe_info(payments, 'Payments')
+logging.info(f"Payments DataFrame Description:\n{payments.describe().to_string()}")
+
+# Ensure Unique (order_id, payment_sequential) Pairs and Export Duplicates
+payments = remove_duplicates(
+    payments,
+    ['order_id', 'payment_sequential'],
+    'Payments',
+    export_duplicates=True,
+    export_path='duplicate_payments.csv'
+)
+
+# Handle Missing Values and Export Missing Rows
+payments = handle_missing_values(
+    payments,
+    ['order_id', 'payment_type', 'payment_value'],
+    'Payments',
+    strategy='warn',
+    export_path='missing_Payments.csv'
+)
+
+# Standardize payment_type to lowercase and strip whitespace
+payments = standardize_text(payments, ['payment_type'])
+
+# Standardize date fields with 'flag' strategy and export invalid dates
+# Assuming 'payment_date' exists, but in your run, it was missing. Handle accordingly.
+payments = standardize_dates(
+    df=payments,
+    columns=['payment_date'],  # Adjust if actual date columns exist
+    dataset_name='Payments',
+    strategy='flag',
+    export_invalid=True,
+    export_path='invalid_payment_dates_Payments.csv'
+)
+
+# Map similar payment types to standardized labels if necessary
+payment_type_mapping = {
+    'credit_card': 'credit_card',
+    'credit card': 'credit_card',
+    'creditcard': 'credit_card',
+    'boleto': 'boleto',
+    'voucher': 'voucher',
+    'debit_card': 'debit_card',
+    'debit card': 'debit_card',
+    'debitcard': 'debit_card',
+    'not_defined': 'not_defined'
+    # Add other variations as needed
+}
+
+# Apply mapping with fallback
+payments['payment_type_mapped'] = payments['payment_type'].map(payment_type_mapping)
+unmapped_payment_types = payments['payment_type'][payments['payment_type_mapped'].isnull()].unique()
+
+if len(unmapped_payment_types) > 0:
+    logging.warning(f'Unmapped payment types found: {unmapped_payment_types}')
+    # Assign 'other' to unmapped payment types
+    payments['payment_type_mapped'] = payments['payment_type_mapped'].fillna('other')
+
+payments['payment_type'] = payments['payment_type_mapped']
+payments.drop('payment_type_mapped', axis=1, inplace=True)
+logging.info('Payment types have been standardized.')
+
+# Validate Payment Values Against Order Totals
+# Assuming 'order_total' exists; if not, this section might need adjustment
+# Placeholder for validation
+# ...
+
+# Ensure 'order_id' is of type string in both DataFrames
+payments['order_id'] = payments['order_id'].astype(str)
+orders['order_id'] = orders['order_id'].astype(str)
+
+# Validate order_ids against Orders Dataset and export invalid records
+payments = validate_foreign_keys(
+    df=payments,
+    reference_df=orders,
+    key='order_id',
+    dataset_name='Payments',
+    reference_name='Orders',
+    strategy='remove',
+    export_invalid=True,
+    export_path='invalid_order_ids_Payments.csv'
+)
+
+# Save cleaned data
+save_clean_data(payments, r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\cleaned\clean_payments.csv")
+
+### Order Reviews Dataset
+
+# Inspect the Data
+logging.info("Order Reviews DataFrame Head:\n" + order_reviews.head().to_string())
+log_dataframe_info(order_reviews, 'Order Reviews')
+logging.info(f"Order Reviews DataFrame Description:\n{order_reviews.describe().to_string()}")
+
+# Correct Column Name Typos if Any
+# It seems 'review_comment_title' and 'review_comment_message' are correct
+# If there are typos, correct them here
+
+# Handle Duplicates Appropriately
+# Instead of removing duplicates solely based on 'review_id', allow multiple order_ids per review_id
+# Remove exact duplicates where all columns are identical
+order_reviews = remove_duplicates(
+    order_reviews,
+    subset=['review_id', 'order_id'],
+    dataset_name='Order Reviews',
+    export_duplicates=True,
+    export_path='duplicate_order_reviews.csv'
+)
+
+# Handle Missing Values and Export Missing Rows
+# Export reviews with missing critical fields to separate files
+order_reviews = handle_missing_values(
+    df=order_reviews,
+    columns=['review_id', 'order_id', 'review_score'],
+    dataset_name='Order Reviews',
+    strategy='warn',
+    export_path='missing_Order_Reviews.csv'
+)
+
+# Standardize and Clean Text Fields
+# Clean text fields: remove leading/trailing whitespace
+order_reviews = standardize_text(order_reviews, ['review_comment_title', 'review_comment_message'])
+
+"""# Translate unique review_comment_title and review_comment_message texts
+translation_cache = {}
+translation_cache_path = 'translation_cache.json'
+
+# Load existing translation cache if available
+if os.path.exists(translation_cache_path):
+    with open(translation_cache_path, 'r', encoding='utf-8') as f:
+        translation_cache = json.load(f)
+        logging.info('Loaded existing translation cache.')
+
+# Translate unique review_comment_title texts
+order_reviews = translate_unique_texts(order_reviews, 'review_comment_title', translation_cache, export_cache_path=translation_cache_path)
+
+# Translate unique review_comment_message texts
+order_reviews = translate_unique_texts(order_reviews, 'review_comment_message', translation_cache, export_cache_path=translation_cache_path)
+"""
+
+# Validate Review Scores and Date Consistency
+# Ensure review_score is between 1 and 5
+invalid_scores = order_reviews[(order_reviews['review_score'] < 1) | (order_reviews['review_score'] > 5)]
+if not invalid_scores.empty:
+    logging.warning(f'{len(invalid_scores)} invalid review scores detected.')
+    # Export invalid review scores
+    save_clean_data(invalid_scores, 'invalid_review_scores_Order_Reviews.csv')
+    # Optionally, decide to remove or flag them
+    order_reviews = order_reviews[(order_reviews['review_score'] >= 1) & (order_reviews['review_score'] <= 5)]
+    logging.info('Invalid review scores have been removed.')
+
+# Standardize date fields with 'flag' strategy and export invalid dates
+order_reviews = standardize_dates(
+    df=order_reviews,
+    columns=['review_creation_date', 'review_answer_timestamp'],
+    dataset_name='Order Reviews',
+    strategy='flag',
+    export_invalid=True,
+    export_path='invalid_review_dates_Order_Reviews.csv'
+)
+
+# Ensure review_answer_timestamp is after review_creation_date
+if {'review_answer_timestamp', 'review_creation_date'}.issubset(order_reviews.columns):
+    invalid_dates = order_reviews[order_reviews['review_answer_timestamp'] < order_reviews['review_creation_date']]
+    if not invalid_dates.empty:
+        logging.warning(f'{len(invalid_dates)} records with review_answer_timestamp before review_creation_date.')
+        # Export inconsistent date records
+        save_clean_data(invalid_dates, 'inconsistent_review_dates_Order_Reviews.csv')
+        # Remove inconsistent records
+        order_reviews = order_reviews[order_reviews['review_answer_timestamp'] >= order_reviews['review_creation_date']]
+        logging.info('Inconsistent date records have been removed.')
+else:
+    logging.warning('Columns review_answer_timestamp and/or review_creation_date not found in Order Reviews dataset.')
+
+# Ensure 'order_id' is of type string in both DataFrames
+order_reviews['order_id'] = order_reviews['order_id'].astype(str)
+orders['order_id'] = orders['order_id'].astype(str)
+
+# Validate order_ids against Orders Dataset and export invalid records
+order_reviews = validate_foreign_keys(
+    df=order_reviews,
+    reference_df=orders,
+    key='order_id',
+    dataset_name='Order Reviews',
+    reference_name='Orders',
+    strategy='remove',
+    export_invalid=True,
+    export_path='invalid_order_ids_Order_Reviews.csv'
+)
+
+# Save cleaned data
+save_clean_data(order_reviews, r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\cleaned\clean_order_reviews.csv")
+
+### Orders Dataset
+
+# Inspect the Data
+logging.info("Orders DataFrame Head:\n" + orders.head().to_string())
+log_dataframe_info(orders, 'Orders')
+logging.info(f"Orders DataFrame Description:\n{orders.describe().to_string()}")
+
+# Ensure order_id Is Unique and Export Exact Duplicates
+orders = remove_duplicates(
+    orders,
+    subset=['order_id'],
+    dataset_name='Orders',
+    export_duplicates=True,
+    export_path='duplicate_orders.csv'
+)
+
+# Handle Missing Values and Export Missing Rows
+orders = handle_missing_values(
+    df=orders,
+    columns=['order_id', 'customer_id', 'order_status', 'order_purchase_timestamp'],
+    dataset_name='Orders',
+    strategy='warn',
+    export_path='missing_Orders.csv'
+)
+
+# Standardize and Validate All Date Fields
+date_columns = ['order_purchase_timestamp', 'order_approved_at', 'order_delivered_carrier_date', 
+               'order_delivered_customer_date', 'order_estimated_delivery_date']
+orders = standardize_dates(
+    df=orders,
+    columns=date_columns,
+    dataset_name='Orders',
+    strategy='warn',  # Change strategy to 'warn' to export invalid dates
+    export_invalid=True,
+    export_path='invalid_order_dates_Orders.csv'
+)
+
+# Ensure date fields are sorted chronologically and export inconsistent date records
+# Convert to datetime if not already done
+for col in date_columns:
+    if col in orders.columns:
+        orders[col] = pd.to_datetime(orders[col], errors='coerce')
+
+# Identify and export records with inconsistent dates
+inconsistent_dates = orders[
+    (orders['order_approved_at'] < orders['order_purchase_timestamp']) |
+    (orders['order_delivered_carrier_date'] < orders['order_approved_at']) |
+    (orders['order_delivered_customer_date'] < orders['order_delivered_carrier_date']) |
+    (orders['order_estimated_delivery_date'] < orders['order_purchase_timestamp'])
+]
+
+if not inconsistent_dates.empty:
+    logging.warning(f'{len(inconsistent_dates)} records with inconsistent dates.')
+    # Export inconsistent date records
+    save_clean_data(inconsistent_dates, 'inconsistent_dates_Orders.csv')
+    # Remove inconsistent records
+    orders = orders.drop(inconsistent_dates.index)
+    logging.info('Inconsistent date records have been removed.')
+else:
+    logging.info('All dates are chronologically consistent.')
+
+# Standardize order_status to lowercase and strip whitespace
+orders = standardize_text(orders, ['order_status'])
+
+# Check unique statuses
+unique_statuses = orders['order_status'].unique()
+logging.info(f"Unique order statuses: {unique_statuses}")
+
+# Example mapping with fallback for unmapped statuses
+status_mapping = {
+    'delivered': 'delivered',
+    'canceled': 'canceled',
+    # Add other mapped statuses if necessary
+}
+
+# Apply mapping with fallback
+orders['order_status_mapped'] = orders['order_status'].map(status_mapping)
+unmapped_statuses = orders['order_status'][orders['order_status_mapped'].isnull()].unique()
+
+if len(unmapped_statuses) > 0:
+    logging.warning(f'Unmapped order statuses found: {unmapped_statuses}')
+    # Assign 'other' to unmapped order statuses
+    orders['order_status_mapped'] = orders['order_status_mapped'].fillna('other')
+
+orders['order_status'] = orders['order_status_mapped']
+orders.drop('order_status_mapped', axis=1, inplace=True)
+logging.info('Order statuses have been standardized.')
+
+# Validate customer_ids against Customers Dataset and export invalid records
+orders = validate_foreign_keys(
+    df=orders,
+    reference_df=customers,
+    key='customer_id',
+    dataset_name='Orders',
+    reference_name='Customers',
+    strategy='remove',
+    export_invalid=True,
+    export_path='invalid_customer_ids_Orders.csv'
+)
+
+# Save cleaned data
+save_clean_data(orders, r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\cleaned\clean_orders.csv")
+
+### Products Dataset
+
+# Inspect the Data
+logging.info("Products DataFrame Head:\n" + products.head().to_string())
+log_dataframe_info(products, 'Products')
+logging.info(f"Products DataFrame Description:\n{products.describe().to_string()}")
+
+# Correct Column Name Typos
+# It appears 'product_name_lenght' and 'product_description_lenght' have typos
+products.rename(columns={
+    'product_name_lenght': 'product_name_length',
+    'product_description_lenght': 'product_description_length'
+}, inplace=True)
+logging.info('Corrected column name typos in Products dataset.')
+
+# Check for duplicates in product_id and export duplicates
+products = remove_duplicates(
+    products,
+    subset=['product_id'],
+    dataset_name='Products',
+    export_duplicates=True,
+    export_path='duplicate_products.csv'
+)
+
+# Handle Missing Values and Export Missing Rows
+missing_product_columns = ['product_category_name', 'product_name_length', 'product_description_length', 
+                           'product_photos_qty', 'product_weight_g', 'product_length_cm', 
+                           'product_height_cm', 'product_width_cm']
+products = handle_missing_values(
+    df=products,
+    columns=missing_product_columns,
+    dataset_name='Products',
+    strategy='warn',
+    export_path='missing_Products.csv'
+)
+
+# Export Products with Non-Positive product_weight_g Instead of Removing
+non_positive_weight = products[products['product_weight_g'] <= 0]
+if not non_positive_weight.empty:
+    logging.warning(f'{len(non_positive_weight)} products with non-positive product_weight_g found.')
+    save_clean_data(non_positive_weight, 'non_positive_weight_Products.csv')
+    # Optionally, decide to keep or handle these records differently
+else:
+    logging.info('No products with non-positive product_weight_g found.')
+
+# Standardize and Validate Category Names
+# Merge products with category_translation to get English category names
+if 'product_category_name' in products.columns and 'product_category_name' in category_translation.columns:
+    products = products.merge(category_translation, on='product_category_name', how='left')
+    if 'product_category_name_english' in products.columns:
+        products['product_category_name'] = products['product_category_name_english'].fillna(products['product_category_name'])
+        products.drop(['product_category_name_english'], axis=1, inplace=True)
+        logging.info('Product category names have been translated to English where possible.')
+    else:
+        logging.warning('product_category_name_english column not found after merging with category_translation.')
+else:
+    logging.warning('product_category_name column missing in products or category_translation dataset.')
+
+# Validate Dimensional and Weight Consistency
+# Ensure that all dimensions and weight are positive numbers
+for col in ['product_weight_g', 'product_length_cm', 'product_height_cm', 'product_width_cm']:
+    invalid_values = products[products[col] <= 0]
+    if not invalid_values.empty:
+        logging.warning(f'{len(invalid_values)} records with non-positive values in {col}.')
+        # Export these records
+        save_clean_data(invalid_values, f'non_positive_{col}_Products.csv')
+        # Decide not to remove them as per user instruction
+    else:
+        logging.info(f'All values in {col} are positive.')
+
+# Ensure 'product_id' is of type string in both DataFrames
+products['product_id'] = products['product_id'].astype(str)
+order_items['product_id'] = order_items['product_id'].astype(str)
+
+# Validate product_ids against Order Items Dataset and export invalid records
+products = validate_foreign_keys(
+    df=products,
+    reference_df=order_items,
+    key='product_id',
+    dataset_name='Products',
+    reference_name='Order Items',
+    strategy='export_only',
+    export_invalid=True,
+    export_path='invalid_product_ids_Products.csv'
+)
+
+# Save cleaned data
+save_clean_data(products, r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\cleaned\clean_products.csv")
+
+### Sellers Dataset
+
+# Inspect the Data
+logging.info("Sellers DataFrame Head:\n" + sellers.head().to_string())
+log_dataframe_info(sellers, 'Sellers')
+logging.info(f"Sellers DataFrame Description:\n{sellers.describe().to_string()}")
+
+# Check for duplicates in seller_id and export duplicates
+sellers = remove_duplicates(
+    sellers,
+    subset=['seller_id'],
+    dataset_name='Sellers',
+    export_duplicates=True,
+    export_path='duplicate_sellers.csv'
+)
+
+# Handle Missing Values and Export Missing Rows
+sellers = handle_missing_values(
+    df=sellers,
+    columns=['seller_id', 'seller_zip_code_prefix', 'seller_city', 'seller_state'],
+    dataset_name='Sellers',
+    strategy='warn',
+    export_path='missing_Sellers.csv'
+)
+
+# Standardize ZIP Codes, City, and State Names
+# Ensure ZIP codes are strings and have correct length
+sellers['seller_zip_code_prefix'] = sellers['seller_zip_code_prefix'].astype(str).str.zfill(5)
+logging.info('Seller ZIP codes have been standardized.')
+
+# Standardize city and state names to lowercase
+sellers = standardize_text(sellers, ['seller_city', 'seller_state'])
+
+# Validate Geographical Consistency
+
+# Remove duplicates in geolocation dataset and export duplicates
+geolocation = remove_duplicates(
+    geolocation,
+    ['geolocation_zip_code_prefix', 'geolocation_lat', 'geolocation_lng', 'geolocation_city', 'geolocation_state'],
+    'Geolocation',
+    export_duplicates=True,
+    export_path='duplicate_geolocation_geolocation.csv'
+)
+
+# Re-aggregate geolocation data if duplicates were removed
+geolocation_grouped = geolocation.groupby('geolocation_zip_code_prefix').agg({
+    'geolocation_lat': 'mean',
+    'geolocation_lng': 'mean',
+    'geolocation_city': lambda x: x.mode()[0].lower() if not x.mode().empty else np.nan,
+    'geolocation_state': lambda x: x.mode()[0].lower() if not x.mode().empty else np.nan
+}).reset_index()
+
+# Convert 'geolocation_zip_code_prefix' to string with leading zeros
+geolocation_grouped['geolocation_zip_code_prefix'] = geolocation_grouped['geolocation_zip_code_prefix'].astype(str).str.zfill(5)
+
+# Merge sellers with geolocation data
+try:
+    sellers = sellers.merge(
+        geolocation_grouped,
+        left_on='seller_zip_code_prefix',
+        right_on='geolocation_zip_code_prefix',
+        how='left'
+    )
+    logging.info('Sellers merged with geolocation data successfully.')
+except Exception as e:
+    logging.error(f'Failed to merge sellers with geolocation data: {e}')
+    sys.exit(1)
+
+# Log missing geolocation data
+missing_geo_sellers = sellers[sellers['geolocation_lat'].isnull()]
+if not missing_geo_sellers.empty:
+    logging.warning(f'{len(missing_geo_sellers)} sellers missing geolocation data.')
+    # Export missing geolocation sellers
+    save_clean_data(missing_geo_sellers, 'missing_geo_sellers.csv')
+
+# Compare city and state with geolocation data
+sellers['city_match'] = sellers['seller_city'] == sellers['geolocation_city']
+sellers['state_match'] = sellers['seller_state'] == sellers['geolocation_state']
+
+# Log mismatches
+city_mismatches = sellers[~sellers['city_match']]
+state_mismatches = sellers[~sellers['state_match']]
+
+if not city_mismatches.empty:
+    logging.warning(f'{len(city_mismatches)} sellers with city mismatch.')
+    # Export city mismatches
+    save_clean_data(city_mismatches, 'city_mismatches_sellers.csv')
+
+if not state_mismatches.empty:
+    logging.warning(f'{len(state_mismatches)} sellers with state mismatch.')
+    # Export state mismatches
+    save_clean_data(state_mismatches, 'state_mismatches_sellers.csv')
+
+# Ensure 'seller_id' is of type string in both DataFrames
+sellers['seller_id'] = sellers['seller_id'].astype(str)
+closed_deals['seller_id'] = closed_deals['seller_id'].astype(str)
+
+# Validate seller_ids against Closed Deals Dataset and export invalid records
+sellers = validate_foreign_keys(
+    df=sellers,
+    reference_df=closed_deals,
+    key='seller_id',
+    dataset_name='Sellers',
+    reference_name='Closed Deals',
+    strategy='export_only',
+    export_invalid=True,
+    export_path='invalid_seller_ids_Sellers.csv'
+)
+
+# Log sellers not found in Closed Deals Dataset instead of Orders
+sellers_not_in_closed_deals = sellers[~sellers['seller_id'].isin(closed_deals['seller_id'])]
+if not sellers_not_in_closed_deals.empty:
+    logging.warning(f'{len(sellers_not_in_closed_deals)} sellers not found in Closed Deals dataset.')
+    # Export sellers not found in Closed Deals
+    save_clean_data(sellers_not_in_closed_deals, 'sellers_not_in_closed_deals.csv')
+
+# Save cleaned data
+save_clean_data(sellers, r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\cleaned\clean_sellers.csv")
+
+### Closed Deals Dataset
+
+# Inspect the Data
+logging.info("Closed Deals DataFrame Head:\n" + closed_deals.head().to_string())
+log_dataframe_info(closed_deals, 'Closed Deals')
+logging.info(f"Closed Deals DataFrame Description:\n{closed_deals.describe().to_string()}")
+
+# Ensure mql_id Is Unique and Export Duplicates if Necessary
+closed_deals = remove_duplicates(
+    closed_deals,
+    subset=['mql_id', 'seller_id'],  # Assuming mql_id and seller_id uniquely identify a closed deal
+    dataset_name='Closed Deals',
+    export_duplicates=True,
+    export_path='duplicate_closed_deals.csv'
+)
+
+# Handle Missing Values and Export Missing Rows
+closed_deals = handle_missing_values(
+    df=closed_deals,
+    columns=['mql_id', 'seller_id', 'sdr_id', 'sr_id', 'won_date'],
+    dataset_name='Closed Deals',
+    strategy='warn',
+    export_path='missing_Closed_Deals.csv'
+)
+
+# Standardize Date Formats for won_date with 'warn' strategy and export invalid dates
+closed_deals = standardize_dates(
+    df=closed_deals,
+    columns=['won_date'],
+    dataset_name='Closed Deals',
+    strategy='warn',  # Change strategy to 'warn' to export invalid dates
+    export_invalid=True,
+    export_path='invalid_won_date_Closed_Deals.csv'
+)
+
+# Detect and Export Outliers in Numerical Fields
+numerical_fields = ['average_stock', 'declared_product_catalog_size', 'declared_monthly_revenue']
+for field in numerical_fields:
+    if field in closed_deals.columns:
+        # Convert to numeric if not already
+        closed_deals[field] = pd.to_numeric(closed_deals[field], errors='coerce')
+        # Detect outliers
+        closed_deals = detect_outliers_iqr(
+            df=closed_deals,
+            column=field,
+            dataset_name='Closed Deals',
+            handle='none',  # Do not handle outliers
+            export_outliers=True,
+            export_path=f'outliers_{field}_Closed_Deals.csv'
+        )
+
+# Export Closed Deals with Non-Positive declared_monthly_revenue
+non_positive_revenue = closed_deals[closed_deals['declared_monthly_revenue'] <= 0]
+if not non_positive_revenue.empty:
+    logging.warning(f'{len(non_positive_revenue)} closed deals with non-positive declared_monthly_revenue found.')
+    save_clean_data(non_positive_revenue, 'non_positive_declared_monthly_revenue_Closed_Deals.csv')
+else:
+    logging.info('No closed deals with non-positive declared_monthly_revenue found.')
+
+# Export Closed Deals with Non-Positive average_stock
+non_positive_stock = closed_deals[closed_deals['average_stock'] <= 0]
+if not non_positive_stock.empty:
+    logging.warning(f'{len(non_positive_stock)} closed deals with non-positive average_stock found.')
+    save_clean_data(non_positive_stock, 'non_positive_average_stock_Closed_Deals.csv')
+else:
+    logging.info('No closed deals with non-positive average_stock found.')
+
+# Export Closed Deals with Non-Positive declared_product_catalog_size
+non_positive_catalog = closed_deals[closed_deals['declared_product_catalog_size'] <= 0]
+if not non_positive_catalog.empty:
+    logging.warning(f'{len(non_positive_catalog)} closed deals with non-positive declared_product_catalog_size found.')
+    save_clean_data(non_positive_catalog, 'non_positive_declared_product_catalog_size_Closed_Deals.csv')
+else:
+    logging.info('No closed deals with non-positive declared_product_catalog_size found.')
+
+# Standardize Categorical Fields
+categorical_fields = ['business_segment', 'lead_type', 'lead_behaviour_profile', 'business_type']
+closed_deals = standardize_text(closed_deals, categorical_fields)
+
+# Ensure 'mql_id' is of type string
+closed_deals['mql_id'] = closed_deals['mql_id'].astype(str)
+
+### Marketing Qualified Leads (MQLs) Dataset
+
+# Inspect the Data
+logging.info("MQLs DataFrame Head:\n" + mqls.head().to_string())
+log_dataframe_info(mqls, 'MQLs')
+logging.info(f"MQLs DataFrame Description:\n{mqls.describe().to_string()}")
+
+# Ensure mql_id Is Unique and Export Duplicates if Necessary
+mqls = remove_duplicates(
+    mqls,
+    subset=['mql_id'],
+    dataset_name='MQLs',
+    export_duplicates=True,
+    export_path='duplicate_MQLs.csv'
+)
+
+# Handle Missing Values and Export Missing Rows
+mqls = handle_missing_values(
+    df=mqls,
+    columns=['origin'],
+    dataset_name='MQLs',
+    strategy='warn',
+    export_path='missing_MQLs.csv'
+)
+
+# Standardize Date Formats for first_contact_date with 'impute' strategy and export invalid dates
+mqls = standardize_dates(
+    df=mqls,
+    columns=['first_contact_date'],
+    dataset_name='MQLs',
+    strategy='impute',
+    fill_value=pd.Timestamp('today'),  # Impute with the current date
+    export_invalid=True,
+    export_path='invalid_first_contact_date_MQLs.csv'
+)
+
+# Standardize and Clean Categorical Fields
+mqls = standardize_text(mqls, ['origin'])
+
+# Ensure 'mql_id' is of type string
+mqls['mql_id'] = mqls['mql_id'].astype(str)
+
+# Validate mql_ids against Closed Deals Dataset and Export Invalid Records
+mqls = validate_foreign_keys(
+    df=mqls,
+    reference_df=closed_deals,
+    key='mql_id',
+    dataset_name='MQLs',
+    reference_name='Closed Deals',
+    strategy='export_only',
+    export_invalid=True,
+    export_path='invalid_mql_ids_MQLs.csv'
+)
+
+# Merge Closed Deals with MQLs to get 'origin'
+try:
+    closed_deals = closed_deals.merge(
+        mqls[['mql_id', 'origin']],
+        on='mql_id',
+        how='left',
+        validate='many_to_one'  # Each closed deal should correspond to one MQL
+    )
+    logging.info('Closed deals merged with MQLs data successfully.')
+except KeyError as e:
+    logging.error(f"KeyError during merge: {e}")
+    sys.exit(f"KeyError: {e}. Exiting script.")
+except Exception as e:
+    logging.error(f"Unexpected error during merge: {e}")
+    sys.exit("Unexpected error during merge. Exiting script.")
+
+# Verify the Merge
+logging.info(f"Columns in Closed Deals after merge: {closed_deals.columns.tolist()}")
+logging.info(f"Sample data from Closed Deals after merge:\n{closed_deals[['mql_id', 'origin']].head().to_string()}")
+
+# Handle Missing Origins
+missing_origin = closed_deals['origin'].isnull().sum()
+if missing_origin > 0:
+    logging.warning(f'{missing_origin} closed deals have missing origin after merging with MQLs.')
+    # Export these records for further review
+    closed_deals[closed_deals['origin'].isnull()].to_csv('missing_origin_Closed_Deals.csv', index=False)
+    logging.info('Closed deals with missing origin exported to missing_origin_Closed_Deals.csv')
+
+# Standardize 'origin' column
+closed_deals = standardize_text(closed_deals, ['origin'])
+
+# Verify 'origin' column presence
+if 'origin' not in closed_deals.columns:
+    logging.error("'origin' column is missing in Closed Deals after merge.")
+    sys.exit("'origin' is required in Closed Deals dataset after merge. Exiting.")
+else:
+    logging.info("'origin' column is present in Closed Deals after merge.")
+
+# Calculate Lead Source Effectiveness
+
+# Calculate total leads per origin from MQLs
+mql_counts = mqls.groupby('origin').size().reset_index(name='total_leads')
+logging.info(f"Total leads per origin:\n{mql_counts.to_string(index=False)}")
+
+# Calculate converted leads per origin from Closed Deals
+converted_counts = closed_deals.groupby('origin').size().reset_index(name='converted_leads')
+logging.info(f"Converted leads per origin:\n{converted_counts.to_string(index=False)}")
+
+# Merge the two counts to compute conversion rates
+lead_source_effectiveness = mql_counts.merge(
+    converted_counts,
+    on='origin',
+    how='left'
+)
+
+# Replace NaN in 'converted_leads' with 0 (no conversions for that origin)
+lead_source_effectiveness['converted_leads'] = lead_source_effectiveness['converted_leads'].fillna(0)
+
+# Calculate conversion rate
+lead_source_effectiveness['conversion_rate'] = (
+    (lead_source_effectiveness['converted_leads'] / lead_source_effectiveness['total_leads']) * 100
+).round(2)
+
+logging.info('Lead source effectiveness calculated.')
+
+# Log the lead_source_effectiveness DataFrame
+logging.info(f"Lead Source Effectiveness:\n{lead_source_effectiveness.to_string(index=False)}")
+
+# Save the lead_source_effectiveness DataFrame
+save_clean_data(
+    lead_source_effectiveness,
+    r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\cleaned\lead_source_effectiveness.csv"
+)
+logging.info('Lead source effectiveness data saved.')
+
+# Save cleaned closed_deals data
+save_clean_data(closed_deals, r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\cleaned\clean_closed_deals.csv")
+logging.info('Clean data saved to clean_closed_deals.csv')
+
+# Save cleaned mqls data
+save_clean_data(mqls, r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\cleaned\clean_mqls.csv")

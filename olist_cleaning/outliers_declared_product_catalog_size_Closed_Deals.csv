@@ -1,0 +1,7 @@
+mql_id,seller_id,sdr_id,sr_id,won_date,business_segment,lead_type,lead_behaviour_profile,has_company,has_gtin,average_stock,business_type,declared_product_catalog_size,declared_monthly_revenue
+bae38661a27f6228ba38c36e766ed769,6a6b1614baaaf766293c17d8cb8c5a9d,f42a2bd194f7802ab052a815c8de65b7,495d4e95a8cf8bbf8b432b612a2aa328,2018-09-10 14:18:01,stationery,industry,cat,,,,reseller,2000.0,100000.0
+a55b94066766f2d29fc22a3bb52d78f6,5181ea7b0d346ed14c5c07f0ff22b2b4,fdb16d3cbbeb5798f2f66c4096be026d,4ef15afb4b2723d8f3d81e51ec7afefe,2018-09-04 14:15:04,toys,online_big,cat,,,,reseller,1000.0,180000.0
+1124225a47b3f07185073f3df3b449bf,faf3ee2764599d114d7e8f25d4c19845,9749123c950bf8363ace42cb1c2d0815,2695de1affa7750089c0455f8ce27021,2018-09-11 19:25:49,home_decor,online_big,wolf,,,,reseller,800.0,100000.0
+1b061b1cec6b5898e5326992d9461610,351cc0833086e30c04f3b0a15dbc3e93,9d12ef1a7eca3ec58c545c678af7869c,de63de0d10a6012430098db33c679b0b,2018-09-03 19:15:53,household_utilities,online_big,cat,,,,reseller,1000.0,0.0
+7f95cccd5ccfb40b086d93e209d08ebf,b28c0625f1f26655cfa0f370be1164ac,370c9f455f93a9a96cbe9bea48e70033,b90f87164b5f8c2cfa5c8572834dbe3f,2018-09-05 14:32:37,food_supplement,online_medium,eagle,True,True,,reseller,1000.0,0.0
+5527123f5a35a024c0f3bf4689e76e7b,6a87cbc1ebb8046bb3a851059feb6df3,2b63542749aa9caf15f21816da1db341,4ef15afb4b2723d8f3d81e51ec7afefe,2018-10-18 16:27:51,home_decor,online_beginner,cat,True,False,,manufacturer,1200.0,0.0

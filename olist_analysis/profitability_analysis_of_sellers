@@ -1,0 +1,340 @@
+import pandas as pd
+import numpy as np  # For square root calculations
+from datetime import datetime
+import os
+import chardet  # For encoding detection
+
+# Function to detect encoding
+def detect_encoding(file_path, num_bytes=100000):
+    with open(file_path, 'rb') as f:
+        raw_data = f.read(num_bytes)
+    result = chardet.detect(raw_data)
+    return result
+
+# ================================
+# Define File Paths
+# ================================
+sellers_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\sellers.xlsx"
+order_items_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\order_items.csv"
+orders_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\orders.csv"
+reviews_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\order_reviews.csv"  # Updated file name
+
+# ================================
+# Check if Files Exist
+# ================================
+required_files = [sellers_path, order_items_path, orders_path]
+optional_files = [reviews_path]
+
+for file in required_files:
+    if not os.path.exists(file):
+        raise FileNotFoundError(f"The file {file} was not found. Please check the file path.")
+
+for file in optional_files:
+    if not os.path.exists(file):
+        print(f"Warning: The optional file {file} was not found. Proceeding without it.")
+
+# ================================
+# Load Datasets
+# ================================
+try:
+    sellers = pd.read_excel(sellers_path)
+    order_items = pd.read_csv(order_items_path)
+    orders = pd.read_csv(orders_path)
+    
+    if os.path.exists(reviews_path):
+        # Detect encoding
+        encoding_info = detect_encoding(reviews_path)
+        detected_encoding = encoding_info['encoding']
+        confidence = encoding_info['confidence']
+        print(f"Detected Encoding for order_reviews.csv: {detected_encoding} with confidence {confidence}")
+        
+        # Attempt to read with detected encoding
+        try:
+            reviews = pd.read_csv(reviews_path, encoding=detected_encoding)
+            print("Order Reviews data loaded successfully.")
+        except UnicodeDecodeError as e:
+            print(f"UnicodeDecodeError: {e}")
+            print("Attempting to read with 'latin1' encoding as a fallback.")
+            reviews = pd.read_csv(reviews_path, encoding='latin1')  # Fallback encoding
+    else:
+        reviews = pd.DataFrame(columns=['seller_id', 'review_score'])  # Create empty DataFrame with expected columns
+        print("No order reviews data available. Reputational costs will be set to 0.")
+except Exception as e:
+    print(f"An error occurred while loading the data: {e}")
+    exit()
+
+# ================================
+# Verify and Clean Reviews Data
+# ================================
+if not reviews.empty:
+    print("\n=== Order Reviews Data Sample ===")
+    print(reviews.head())
+    
+    print("\n=== Order Reviews Data Types ===")
+    print(reviews.dtypes)
+    
+    # Ensure correct data types
+    reviews['seller_id'] = reviews['seller_id'].astype(str).str.strip()
+    reviews['review_score'] = pd.to_numeric(reviews['review_score'], errors='coerce').fillna(0).astype(int)
+    
+    # Apply reputational_cost function
+    def reputational_cost(score):
+        if score >= 4:
+            return 0
+        elif score == 3:
+            return 40
+        elif score == 2:
+            return 50
+        elif score == 1:
+            return 100
+        else:
+            return 0  # Handle unexpected scores
+    
+    reviews['reputational_cost'] = reviews['review_score'].apply(reputational_cost)
+    
+    # Verify reputational_cost
+    print("\n=== Reputational Costs Sample ===")
+    print(reviews[['review_score', 'reputational_cost']].head())
+    
+    # Count low score reviews
+    low_score_reviews = reviews[reviews['review_score'] <= 3]
+    print(f"\nNumber of reviews with score <= 3: {low_score_reviews.shape[0]}")
+else:
+    print("No order reviews data available.")
+    low_score_reviews = pd.DataFrame(columns=['seller_id', 'review_score', 'reputational_cost'])
+
+# ================================
+# Calculate Sales Fees
+# ================================
+order_items['sales_fee'] = order_items['price'] * 0.10
+
+# ================================
+# Aggregate Sales Fees per Seller
+# ================================
+sales_fees_per_seller = order_items.groupby('seller_id')['sales_fee'].sum().reset_index()
+sales_fees_per_seller.rename(columns={'sales_fee': 'total_sales_fees'}, inplace=True)
+
+# ================================
+# Process 'joined_date'
+# ================================
+sellers['joined_date'] = pd.to_datetime(sellers['joined_date'], errors='coerce')
+
+# ================================
+# Define Analysis End Date
+# ================================
+analysis_end_date = pd.to_datetime(datetime.today())
+
+# ================================
+# Calculate Active Months per Seller
+# ================================
+sellers['active_months'] = ((analysis_end_date.year - sellers['joined_date'].dt.year) * 12) + (analysis_end_date.month - sellers['joined_date'].dt.month)
+sellers['active_months'] = sellers['active_months'].apply(lambda x: x if x > 0 else 1)  # Ensure at least 1 month
+
+# ================================
+# Calculate Subscription Revenue
+# ================================
+sellers['subscription_revenue'] = sellers['active_months'] * 80
+
+# ================================
+# Merge Sales Fees with Subscription Revenue
+# ================================
+seller_lifetime_value = sellers[['seller_id', 'subscription_revenue']].merge(sales_fees_per_seller, on='seller_id', how='left')
+seller_lifetime_value['total_sales_fees'] = seller_lifetime_value['total_sales_fees'].fillna(0)
+
+# ================================
+# Calculate SLV
+# ================================
+seller_lifetime_value['SLV'] = seller_lifetime_value['subscription_revenue'] + seller_lifetime_value['total_sales_fees']
+
+# ================================
+# Ensure All Sellers are Accounted For
+# ================================
+seller_lifetime_value = sellers[['seller_id']].merge(seller_lifetime_value, on='seller_id', how='left')
+seller_lifetime_value['total_sales_fees'] = seller_lifetime_value['total_sales_fees'].fillna(0)
+seller_lifetime_value['subscription_revenue'] = seller_lifetime_value['subscription_revenue'].fillna(0)
+seller_lifetime_value['SLV'] = seller_lifetime_value['SLV'].fillna(0)
+
+# ================================
+# Display SLV Data
+# ================================
+print("\n=== Seller Lifetime Value (SLV) ===")
+print(seller_lifetime_value.head())
+
+# ================================
+# Define IT Cost Parameters
+# ================================
+Alpha = 3157.27  # Cost per new seller (Cₛ) in BRL
+Beta = 978.23    # Cost per new product (Cₚ) in BRL
+
+# ================================
+# Calculate Number of Products per Seller
+# ================================
+seller_product_counts = order_items.groupby('seller_id')['product_id'].nunique().reset_index(name='product_count')
+
+# ================================
+# Merge Product Counts with SLV
+# ================================
+seller_financials = seller_lifetime_value.merge(seller_product_counts, on='seller_id', how='left')
+seller_financials['product_count'] = seller_financials['product_count'].fillna(0).astype(int)
+
+# ================================
+# Allocate IT Costs per Seller
+# ================================
+
+# Calculate the total number of sellers
+total_sellers = seller_financials['seller_id'].nunique()
+
+# Calculate the fixed IT allocation component (sqrt(alpha * total_sellers)) divided equally among sellers
+fixed_it_total = np.sqrt(Alpha * total_sellers)
+fixed_it_per_seller = fixed_it_total / total_sellers
+
+# Calculate the variable IT allocation component for each seller (sqrt(beta * product_count))
+seller_financials['Variable_IT_allocation'] = np.sqrt(Beta * seller_financials['product_count'])
+
+# Total IT allocation per seller is the sum of fixed and variable components
+seller_financials['IT_allocation'] = fixed_it_per_seller + seller_financials['Variable_IT_allocation']
+
+# Optional: Round the allocations for better readability
+seller_financials['IT_allocation'] = seller_financials['IT_allocation'].round(2)
+
+# Display the IT allocation per seller
+print("\n=== IT Allocation per Seller ===")
+print(seller_financials[['seller_id', 'IT_allocation']].head())
+
+# ================================
+# Apply Reputational Cost
+# ================================
+if not low_score_reviews.empty:
+    # Ensure seller_id is string and stripped
+    low_score_reviews.loc[:, 'seller_id'] = low_score_reviews['seller_id'].astype(str).str.strip()
+    
+    # Recalculate reputational_cost in low_score_reviews
+    low_score_reviews.loc[:, 'reputational_cost'] = low_score_reviews['review_score'].apply(reputational_cost)
+    
+    # Aggregate reputational_cost per seller
+    seller_reputation = low_score_reviews.groupby('seller_id')['reputational_cost'].sum().reset_index()
+    
+    # Merge with seller_financials
+    seller_financials = seller_financials.merge(seller_reputation, on='seller_id', how='left')
+    seller_financials['reputational_cost'] = seller_financials['reputational_cost'].fillna(0)
+else:
+    seller_financials['reputational_cost'] = 0
+    print("No reputational costs calculated due to missing or empty reviews data.")
+
+# ================================
+# Verify Reputational Costs
+# ================================
+print("\n=== Reputational Costs per Seller ===")
+print(seller_financials[['seller_id', 'reputational_cost']].head())
+
+# Check total reputational_cost
+total_reputational = seller_financials['reputational_cost'].sum()
+print(f"Total Reputational Cost: {total_reputational:.2f} BRL")
+
+# ================================
+# Calculate Total Costs per Seller
+# ================================
+seller_financials['total_costs'] = seller_financials['IT_allocation'] + seller_financials['reputational_cost']
+
+# ================================
+# Calculate Final LTV
+# ================================
+seller_financials['LTV'] = seller_financials['SLV'] - seller_financials['total_costs']
+
+print("\n=== Final LTV per Seller ===")
+print(seller_financials[['seller_id', 'SLV', 'IT_allocation', 'reputational_cost', 'total_costs', 'LTV']].head())
+
+# ================================
+# Define Breakeven Threshold
+# ================================
+threshold = 0  # Breakeven
+buffer_threshold = 1000  # Optional buffer
+
+# ================================
+# Identify Underperforming Sellers (LTV < threshold)
+# ================================
+underperforming_sellers = seller_financials[seller_financials['LTV'] < threshold]['seller_id'].unique()
+print(f"\nUnderperforming Sellers to Remove (LTV < {threshold} BRL):")
+print(underperforming_sellers)
+
+underperforming_sellers_buffer = seller_financials[seller_financials['LTV'] < buffer_threshold]['seller_id'].unique()
+print(f"\nUnderperforming Sellers to Remove (LTV < {buffer_threshold} BRL):")
+print(underperforming_sellers_buffer)
+
+# ================================
+# Calculate Total Savings and Net Impact for Underperforming Sellers (LTV < 0 BRL)
+# ================================
+removed_sellers = seller_financials[seller_financials['seller_id'].isin(underperforming_sellers)]
+revenue_loss = removed_sellers['SLV'].sum()
+it_cost_savings = removed_sellers['IT_allocation'].sum()
+reputation_savings = removed_sellers['reputational_cost'].sum()
+total_savings = it_cost_savings + reputation_savings
+net_impact = total_savings - revenue_loss
+
+print("\n=== Savings and Net Impact for Underperforming Sellers (LTV < 0 BRL) ===")
+print(f"Revenue Loss from Removing Sellers: {revenue_loss:.2f} BRL")
+print(f"Individual IT Cost Savings from Removing Sellers: {it_cost_savings:.2f} BRL")
+print(f"Reputation Savings from Removing Sellers: {reputation_savings:.2f} BRL")
+print(f"Total Savings: {total_savings:.2f} BRL")
+print(f"Net Impact on Profit: {net_impact:.2f} BRL")
+
+# ================================
+# Calculate Total Savings and Net Impact for Underperforming Sellers with Buffer (LTV < 10,000 BRL)
+# ================================
+removed_sellers_buffer = seller_financials[seller_financials['seller_id'].isin(underperforming_sellers_buffer)]
+revenue_loss_buffer = removed_sellers_buffer['SLV'].sum()
+it_cost_savings_buffer = removed_sellers_buffer['IT_allocation'].sum()
+reputation_savings_buffer = removed_sellers_buffer['reputational_cost'].sum()
+total_savings_buffer = it_cost_savings_buffer + reputation_savings_buffer
+net_impact_buffer = total_savings_buffer - revenue_loss_buffer
+
+print("\n=== Savings and Net Impact for Underperforming Sellers (LTV < 10,000 BRL) ===")
+print(f"Revenue Loss from Removing Sellers: {revenue_loss_buffer:.2f} BRL")
+print(f"Individual IT Cost Savings from Removing Sellers: {it_cost_savings_buffer:.2f} BRL")
+print(f"Reputation Savings from Removing Sellers: {reputation_savings_buffer:.2f} BRL")
+print(f"Total Savings: {total_savings_buffer:.2f} BRL")
+print(f"Net Impact on Profit: {net_impact_buffer:.2f} BRL")
+
+# ================================
+# Save Savings and Net Impact Metrics to CSV
+# ================================
+
+# Create a dictionary of metrics
+metrics = {
+    'Group': ['Underperforming (LTV < 0)', 'Underperforming with Buffer (LTV < 10,000)'],
+    'Revenue Loss (BRL)': [revenue_loss, revenue_loss_buffer],
+    'IT Cost Savings (BRL)': [it_cost_savings, it_cost_savings_buffer],
+    'Reputation Savings (BRL)': [reputation_savings, reputation_savings_buffer],
+    'Total Savings (BRL)': [total_savings, total_savings_buffer],
+    'Net Impact on Profit (BRL)': [net_impact, net_impact_buffer]
+}
+
+# Convert to DataFrame
+metrics_df = pd.DataFrame(metrics)
+
+# Define output path
+metrics_output_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\post analysis\savings_metrics"  # Change path as needed
+
+# Export to CSV
+try:
+    metrics_df.to_csv(metrics_output_path, index=False)
+    print(f"\nSavings Metrics successfully exported to {metrics_output_path}")
+except Exception as e:
+    print(f"An error occurred while exporting the savings metrics: {e}")
+
+# ================================
+# Export Final LTV DataFrame to CSV
+# ================================
+
+output_ltv_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\post analysis\seller_ltv_final.csv"  # Updated path to Desktop
+
+# Select desired columns
+columns_to_export_final = ['seller_id', 'SLV', 'IT_allocation', 'reputational_cost', 'total_costs', 'LTV']
+
+# Export to CSV
+try:
+    seller_financials.to_csv(output_ltv_path, columns=columns_to_export_final, index=False)
+    print(f"\nFinal LTV Data successfully exported to {output_ltv_path}")
+except Exception as e:
+    print(f"An error occurred while exporting the final LTV data: {e}")
+

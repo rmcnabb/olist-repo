@@ -1,0 +1,106 @@
+import pandas as pd
+from datetime import datetime
+import os
+
+# ================================
+# Define File Paths
+# ================================
+sellers_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\sellers.xlsx"
+order_items_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\order_items.csv"
+orders_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\precleaned data\orders.csv"
+
+# ================================
+# Check if Files Exist
+# ================================
+for file in [sellers_path, order_items_path, orders_path]:
+    if not os.path.exists(file):
+        raise FileNotFoundError(f"The file {file} was not found. Please check the file path.")
+
+# ================================
+# Load Datasets
+# ================================
+try:
+    sellers = pd.read_excel(sellers_path)
+    order_items = pd.read_csv(order_items_path)
+    orders = pd.read_csv(orders_path)
+except Exception as e:
+    print(f"An error occurred while loading the data: {e}")
+    exit()
+
+# ================================
+# Calculate Sales Fees
+# ================================
+order_items['sales_fee'] = order_items['price'] * 0.10
+
+# ================================
+# Aggregate Sales Fees per Seller
+# ================================
+sales_fees_per_seller = order_items.groupby('seller_id')['sales_fee'].sum().reset_index()
+sales_fees_per_seller.rename(columns={'sales_fee': 'total_sales_fees'}, inplace=True)
+
+# ================================
+# Process 'joined_date'
+# ================================
+sellers['joined_date'] = pd.to_datetime(sellers['joined_date'], errors='coerce')
+
+# ================================
+# Define Analysis End Date
+# ================================
+analysis_end_date = pd.to_datetime(datetime.today())
+
+# ================================
+# Calculate Active Months per Seller
+# ================================
+sellers['active_months'] = ((analysis_end_date.year - sellers['joined_date'].dt.year) * 12) + (analysis_end_date.month - sellers['joined_date'].dt.month)
+sellers['active_months'] = sellers['active_months'].apply(lambda x: x if x > 0 else 1)  # Ensure at least 1 month
+
+# ================================
+# Calculate Subscription Revenue
+# ================================
+sellers['subscription_revenue'] = sellers['active_months'] * 80
+
+# ================================
+# Merge Sales Fees with Subscription Revenue
+# ================================
+seller_lifetime_value = sellers[['seller_id', 'subscription_revenue']].merge(sales_fees_per_seller, on='seller_id', how='left')
+seller_lifetime_value['total_sales_fees'] = seller_lifetime_value['total_sales_fees'].fillna(0)
+
+# ================================
+# Calculate SLV
+# ================================
+seller_lifetime_value['SLV'] = seller_lifetime_value['subscription_revenue'] + seller_lifetime_value['total_sales_fees']
+
+# ================================
+# Ensure All Sellers are Accounted For
+# ================================
+seller_lifetime_value = sellers[['seller_id']].merge(seller_lifetime_value, on='seller_id', how='left')
+seller_lifetime_value['total_sales_fees'] = seller_lifetime_value['total_sales_fees'].fillna(0)
+seller_lifetime_value['subscription_revenue'] = seller_lifetime_value['subscription_revenue'].fillna(0)
+seller_lifetime_value['SLV'] = seller_lifetime_value['SLV'].fillna(0)
+
+# ================================
+# Display the First Few Rows
+# ================================
+print(seller_lifetime_value.head())
+
+# ================================
+# Export the DataFrame to CSV
+# ================================
+
+# Define the output path and filename
+output_path = r"C:\Users\ross_\OneDrive\Documents\Brazilian e-commerce datasets\Python analysis\post analysis\seller_lifetime_value.csv"
+
+# Select the desired columns to ensure they are included
+columns_to_export = ['seller_id', 'SLV', 'subscription_revenue', 'total_sales_fees']
+
+# Verify that the columns exist in the DataFrame
+missing_columns = [col for col in columns_to_export if col not in seller_lifetime_value.columns]
+if missing_columns:
+    raise ValueError(f"The following required columns are missing from the DataFrame: {missing_columns}")
+
+# Export to CSV
+try:
+    seller_lifetime_value.to_csv(output_path, columns=columns_to_export, index=False)
+    print(f"\nData successfully exported to {output_path}")
+except Exception as e:
+    print(f"An error occurred while exporting the data: {e}")
